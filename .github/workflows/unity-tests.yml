@@ -1,0 +1,111 @@
+name: Unity CI
+permissions:
+  checks: write
+  contents: write
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest     # Usa runners gratuitos de GitHub
+    steps:
+      
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          
+
+      - name: Clean test artifacts
+        run: |
+          rm -rf CodeCoverage
+          rm -rf artifacts
+      
+      - uses: actions/cache@v3
+        with:
+          path: Library
+          key: Library-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: |
+            Library-
+            
+      
+      - name: Run EditMode tests + Code Coverage
+        uses: game-ci/unity-test-runner@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          unityVersion: 2022.3.25f1
+          testMode: EditMode
+          githubToken: ${{ secrets.GITHUB_TOKEN }}
+          coverageOptions: |
+            enableCodeCoverage
+            generateHtmlReport
+            generateAdditionalMetrics
+          artifactsPath: CoverageResults
+          
+      - name: List coverage output (debug)
+        run: |
+          echo "Workspace content --------"
+          ls -R
+          echo "CoverageResults content ---"
+          ls -R CoverageResults || true
+      
+      - name: Convert coverage to lcov & cobertura
+        uses: danielpalme/ReportGenerator-GitHub-Action@5
+        with:
+          reports: CoverageResults/editmode-results.xml
+          targetdir: CoverageReports
+          reporttypes: 'LCOV;Cobertura'
+          
+      - name: Generate coverage badge manually
+        shell: bash
+        run: |
+          XML="CoverageReports/Cobertura.xml"
+          if [ ! -f "$XML" ]; then
+            echo "Coverage file $XML not found"; exit 1
+          fi
+
+          # === Extraer line-rate (0-1) y calcular porcentaje ===
+          rate=$(grep -o 'line-rate="[0-9.]\+"' "$XML" | head -n1 | cut -d'"' -f2)
+          pct=$(awk "BEGIN {printf \"%d\", ($rate*100+0.5)}")   # redondeo
+
+          # === Color ===
+          if   [ $pct -ge 90 ]; then color="brightgreen"
+          elif [ $pct -ge 75 ]; then color="yellowgreen"
+          elif [ $pct -ge 50 ]; then color="yellow"
+          else                      color="red"; fi
+
+          # === Descargar badge ===
+          curl -sSf -o badge-coverage.svg \
+            "https://img.shields.io/badge/Coverage-${pct}%25-${color}.svg"
+
+      - name: Commit badge
+        uses: EndBug/add-and-commit@v9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          add: "badge-coverage.svg"
+          message: "chore(ci): update coverage badge"
+      
+      - name: Build project (Windows)
+        uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL:   ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          targetPlatform: StandaloneWindows64
+          unityVersion: 2022.3.25f1
+          allowDirtyBuild: true
+          versioning: None
+      
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Build
+          path: build
